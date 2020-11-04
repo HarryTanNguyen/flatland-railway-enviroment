@@ -45,8 +45,8 @@ def evalfun(num_samples = 100, timed=True, debug = False, refresh = 0.1):
             a_schdule = search_a(env)
             duration = time.time() - start;
 
-            print(a_schdule[0])
-            print(a_schdule[1])
+            #print(a_schdule[0])
+            #print(a_schdule[1])
 
             schedule = a_schdule[2]
             print(schedule)

@@ -8,7 +8,7 @@ from typing import Any
 from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_env import RailEnv, RailEnvActions
 from flatland.core.grid.grid4_utils import get_new_position
-
+from flatland.envs.agent_utils import RailAgentStatus
 
 class StateConverter:
     """
@@ -208,7 +208,7 @@ class SearchState:
 
     def __eq__(self, other):
         if isinstance(other, self.__class__):
-            return np.array_equal(self.actives, other.actives) and np.array_equal(self.positions, other.positions)
+            return self.actives == other.actives and np.array_equal(self.positions, other.positions)
         else:
             return NotImplemented
 
@@ -223,6 +223,7 @@ class SearchNode:
     action: Any = field(compare=False)
     searchenv: Any = field(compare=False)
     searchstate: Any = field(compare=False)
+    time_step: Any = field(compare= False)
 
     def __init__(self, neg_g, parent, action, searchenv, searchstate,time_step = 0):
 
@@ -246,7 +247,10 @@ class SearchNode:
 
     def __eq__(self, other):
         if isinstance(other, self.__class__):
-            return self.searchstate.__eq__(other.searchstate) and self.time_step == other.time_step
+            if self.searchstate.__eq__(other.searchstate) and self.time_step == other.time_step:
+                return True
+            else:
+                return False
         else:
             return NotImplemented
 
@@ -264,7 +268,9 @@ class SearchNode:
         return self.agents_at_goal().all()
 
     def get_evaluation(self):
-        return -self.neg_g + self.get_heuristic()
+        # Ca
+        print("Penalty apply: ",self.get_timing_penalty(self.time_step, self.searchenv.env._max_episode_steps))
+        return (self.neg_g + self.get_timing_penalty(self.time_step, self.searchenv.env._max_episode_steps)) + self.get_heuristic()
 
     def get_heuristic(self):
         # Compute the shortest paths from current state (position of all agent to their goal)
@@ -272,7 +278,12 @@ class SearchNode:
         # There are many ways for a train to enter the goal position (4 direction) choose the shortest one
         shortest_to_goal_state = np.min(shortest_to_goal_states, 1)
         # heuristic value is the longest distance that need for all agent to reach the goal position
-        return np.int32(np.max(shortest_to_goal_state))
+        h = np.int32(np.max(shortest_to_goal_state))
+        total_forward_penalty = 0
+        if self.searchstate.actives != RailAgentStatus.READY_TO_DEPART:
+            for i in range(1,h+1):
+                total_forward_penalty += self.get_timing_penalty(self.time_step + i, self.searchenv.env._max_episode_steps)
+        return h + (total_forward_penalty)
 
     def get_occupied_tiles(self):
         """
@@ -284,6 +295,27 @@ class SearchNode:
         valid_tiles = tiles[self.searchstate.actives == 1]
         occupied[valid_tiles] = 1
         return occupied
+
+    def get_timing_penalty(self, elapsed_steps, max_episode_steps):
+
+        # By default, no penalty.
+        penalty = 0
+
+        # Penalty only applies if the agent is active.
+        if self.searchstate.actives == RailAgentStatus.ACTIVE:
+
+            # Compute the number of steps the agent is outside bounds.
+            steps_outside = 0
+
+            if elapsed_steps <= self.searchenv.release:
+                steps_outside = 1 + self.searchenv.release - elapsed_steps
+            if elapsed_steps >= self.searchenv.deadline:
+                steps_outside = 1 + elapsed_steps - self.searchenv.deadline
+
+            # Compute the normalized penalty.
+            penalty = ((steps_outside * steps_outside) / (max_episode_steps * max_episode_steps / 4))
+
+        return penalty
 
     def get_all_valid_actions(self):
         """
@@ -297,7 +329,7 @@ class SearchNode:
 
         # Mask the rail transition actions for idle agents.
         if self.searchstate.actives == 0:
-            agent_actions = [1, 0, 1, 0, 0]     # DO_NOTHING, or MOVE_FORWARD.
+            agent_actions = [0, 0, 1, 0, 1]     # DO_NOTHING, or MOVE_FORWARD.
 
         # Mask the rail transition actions for done agents.
         if self.agents_at_goal() == True:
@@ -372,8 +404,12 @@ class SearchNode:
                     if next_tile == self.searchenv.goal_tile[i]:
                         # occupied[next_tile] = 0
                         new_actives[i] = 0
-
-        return SearchNode(self.neg_g - 1, self, action, self.searchenv, SearchState(new_states, new_actives),self.time_step + 1)
+        print("Action: ",action)
+        # If the agent is not active and will remain inactive at next time step --> not incur step cost
+        next_neg = self.neg_g
+        if self.searchstate.actives == RailAgentStatus.ACTIVE:
+            next_neg = self.neg_g -1
+        return SearchNode(next_neg, self, action, self.searchenv, SearchState(new_states, new_actives),self.time_step + 1)
 
     def get_path(self):
         """
@@ -407,7 +443,7 @@ class SearchNode:
 
 class SearchEnv:
 
-    def __init__(self, env: RailEnv,conv: StateConverter,model, shortest_path,agent_id):
+    def __init__(self, env: RailEnv,conv: StateConverter,model, shortest_path, agent_id):
         self.conv = conv
         self.transition = model[0]
         self.valid_actions = model[1]
@@ -416,11 +452,13 @@ class SearchEnv:
         self.initial_state = np.zeros(1, dtype=np.int32)
         self.initial_active = np.zeros(1, dtype=np.int32)
 
+        self.env = env
         # Compute the starting state of all agent
         self.agent_id = agent_id
-        agent = env.agents[agent_id]
-        self.initial_state[0] = self.conv.position_to_state(agent.initial_position[0], agent.initial_position[1], agent.initial_direction)
-
+        self.agent = env.agents[agent_id]
+        self.initial_state[0] = self.conv.position_to_state(self.agent.initial_position[0], self.agent.initial_position[1], self.agent.initial_direction)
+        self.release = self.agent.release_date
+        self.deadline = self.agent.deadline
         # Compute the tile index for the target position of agents
         self.goal_tile = np.zeros(1, dtype=np.int32)
         self.goal_tile[0] = self.conv.position_to_tile(env.agents[agent_id].target)
@@ -471,19 +509,28 @@ def a_star_search(root, occupied):
 
         # Otherwise, we will generate all child nodes.
         print("Valid Action: ", current.get_all_valid_actions())
+        print("Current time step " +  str(current.time_step) +" Action: " + str(current.action))
         for action in current.get_all_valid_actions():
-            print("Action: ",action)
+            #print("Action: ",action)
             # Create successor node from action.
             nextnode = current.expand_node(action,occupied)
-            print("Next Node: ",nextnode)
+
             # Generated one more node.
             generations = generations + 1
 
             # If this is a valid new node, append it to the open list.
             if nextnode is not None and not closed.__contains__(nextnode):
-
+                print("Action Approved: " + str(action) +" F value of Next node: ", nextnode.f)
                 closed.add(nextnode)
                 heapq.heappush(openlist, nextnode)
+            else:
+                if action == 4:
+                    if closed.__contains__(nextnode):
+                        print("current node time step ",current.time_step)
+                        print(closed)
+                        print(nextnode)
+                    elif nextnode is None:
+                        print ("Next Node is None")
 
     return (None,None, expansions, generations)
 
@@ -580,8 +627,8 @@ def search_a(env:RailEnv):
         state_schedule.append(each_schedule[1])
         n_timesteps = np.append(n_timesteps, [len(each_schedule[1])])
 
-        temp_position=[]
-        temp_tile=[]
+        temp_position = []
+        temp_tile = []
         for state in each_schedule[1]:
             temp_position.append(conv.state_to_position(state))
             temp_tile.append((conv.state_to_tile(state)))
@@ -589,7 +636,7 @@ def search_a(env:RailEnv):
         tile.append(temp_tile)
 
     # Combine separate actions into a list
-    actions=combine(schedules,random_order_agent,int(np.max(n_timesteps)))
+    actions = combine(schedules,random_order_agent,int(np.max(n_timesteps)))
 
     return (schedules, occupancy_map,actions)
 
