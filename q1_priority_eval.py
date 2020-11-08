@@ -8,14 +8,14 @@ from flatland.utils.rendertools import RenderTool
 from flatland.utils.graphics_pgl import RailViewWindow
 
 from utils.environment_utils import create_multi_agent_environment
-from q1_priority_plan import search,search_a
+from q1_priority_plan import genetic_algorithm,prioritized_planning
 
 # Evaluates the A* search algorithm over a number of samples.
 def evalfun(num_samples = 100, timed=True, debug = False, refresh = 0.1):
 
     # A list of (mapsize, agent count) tuples, change or extend this to test different sizes.
     #problemsizes = [(5, 3), (7, 4), (9, 5), (11, 6), (13, 7)]
-    problemsizes = [(6, 4)]
+    problemsizes = [(25, 4)]
     # Create a list of seeds to consider.
     seeds = numpy.random.randint(2**29, size=3*num_samples)
 
@@ -42,13 +42,17 @@ def evalfun(num_samples = 100, timed=True, debug = False, refresh = 0.1):
                         env.agents[i].initial_position[1]) + ")" + " Release Date " + str(env.agents[i].release_date)+ " Deadline " + str(env.agents[i].deadline))
 
             start = time.time()
-            a_schdule = search_a(env)
+            # Task 1 prioritized planning ########
+            a_schdule = prioritized_planning(env)
+
+            # Task 3 Improvement prioritized planning (Genetic Algorithm)
+            # Uncomment to run task 3
+            #a_schdule = genetic_algorithm(env)
+
+
             duration = time.time() - start;
 
-            #print(a_schdule[0])
-            #print(a_schdule[1])
-
-            schedule = a_schdule[2]
+            schedule = a_schdule
             print(schedule)
             if debug:
                 env_renderer.render_env(show=True, frames=False, show_observations=False)
@@ -76,7 +80,7 @@ def evalfun(num_samples = 100, timed=True, debug = False, refresh = 0.1):
 if __name__ == "__main__":
 
     # Number of maps of each size to consider.
-    _num_maps = 1
+    _num_maps = 10
     # If _timed = true, impose release dates and deadlines. False for regular (Assignment 1) behavior.
     _timed = True
 

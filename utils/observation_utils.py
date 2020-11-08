@@ -1,5 +1,5 @@
 import numpy as np
-from flatland.envs.observations import TreeObsForRailEnv
+from flatland.envs.observations import TreeObsForRailEnv, TreeObsForRailEnvExtended
 
 
 def max_lt(seq, val):
@@ -54,10 +54,12 @@ def norm_obs_clip(obs, clip_min=-1, clip_max=1, fixed_radius=0, normalize_to_ran
     return np.clip((np.array(obs) - min_obs) / norm, clip_min, clip_max)
 
 
-def _split_node_into_feature_groups(node: TreeObsForRailEnv.Node) -> (np.ndarray, np.ndarray, np.ndarray):
+def _split_node_into_feature_groups(node: TreeObsForRailEnvExtended.Node) -> (np.ndarray, np.ndarray, np.ndarray, np.ndarray):
+
     data = np.zeros(6)
     distance = np.zeros(1)
     agent_data = np.zeros(4)
+    agent_time_data = np.zeros(3)
 
     data[0] = node.dist_own_target_encountered
     data[1] = node.dist_other_target_encountered
@@ -73,53 +75,62 @@ def _split_node_into_feature_groups(node: TreeObsForRailEnv.Node) -> (np.ndarray
     agent_data[2] = node.num_agents_malfunctioning
     agent_data[3] = node.speed_min_fractional
 
-    return data, distance, agent_data
+    #Modified
+    agent_time_data[0] = node.time_step
+    agent_time_data[1] = node.release_date
+    agent_time_data[2] = node.deadline
+
+    return data, distance, agent_data, agent_time_data
 
 
-def _split_subtree_into_feature_groups(node: TreeObsForRailEnv.Node, current_tree_depth: int, max_tree_depth: int) -> (np.ndarray, np.ndarray, np.ndarray):
+def _split_subtree_into_feature_groups(node: TreeObsForRailEnvExtended.Node, current_tree_depth: int, max_tree_depth: int) -> (np.ndarray, np.ndarray, np.ndarray, np.ndarray):
     if node == -np.inf:
         remaining_depth = max_tree_depth - current_tree_depth
         # reference: https://stackoverflow.com/questions/515214/total-number-of-nodes-in-a-tree-data-structure
         num_remaining_nodes = int((4 ** (remaining_depth + 1) - 1) / (4 - 1))
-        return [-np.inf] * num_remaining_nodes * 6, [-np.inf] * num_remaining_nodes, [-np.inf] * num_remaining_nodes * 4
+        return [-np.inf] * num_remaining_nodes * 6, [-np.inf] * num_remaining_nodes, [-np.inf] * num_remaining_nodes * 4, [-np.inf] * num_remaining_nodes * 3
 
-    data, distance, agent_data = _split_node_into_feature_groups(node)
+    data, distance, agent_data, agent_time_data = _split_node_into_feature_groups(node)
 
     if not node.childs:
-        return data, distance, agent_data
+        return data, distance, agent_data, agent_time_data
 
-    for direction in TreeObsForRailEnv.tree_explored_actions_char:
-        sub_data, sub_distance, sub_agent_data = _split_subtree_into_feature_groups(node.childs[direction], current_tree_depth + 1, max_tree_depth)
+    for direction in TreeObsForRailEnvExtended.tree_explored_actions_char:
+        sub_data, sub_distance, sub_agent_data, sub_agent_time_data = _split_subtree_into_feature_groups(node.childs[direction], current_tree_depth + 1, max_tree_depth)
         data = np.concatenate((data, sub_data))
         distance = np.concatenate((distance, sub_distance))
         agent_data = np.concatenate((agent_data, sub_agent_data))
+        agent_time_data = np.concatenate((agent_time_data, sub_agent_time_data))
 
-    return data, distance, agent_data
+    return data, distance, agent_data, agent_time_data
 
 
-def split_tree_into_feature_groups(tree: TreeObsForRailEnv.Node, max_tree_depth: int) -> (np.ndarray, np.ndarray, np.ndarray):
+def split_tree_into_feature_groups(tree: TreeObsForRailEnvExtended.Node, max_tree_depth: int) -> (np.ndarray, np.ndarray, np.ndarray,np.ndarray):
     """
     This function splits the tree into three difference arrays of values
     """
-    data, distance, agent_data = _split_node_into_feature_groups(tree)
+    data, distance, agent_data, agent_time_data = _split_node_into_feature_groups(tree)
 
-    for direction in TreeObsForRailEnv.tree_explored_actions_char:
-        sub_data, sub_distance, sub_agent_data = _split_subtree_into_feature_groups(tree.childs[direction], 1, max_tree_depth)
+    for direction in TreeObsForRailEnvExtended.tree_explored_actions_char:
+        sub_data, sub_distance, sub_agent_data, sub_agent_time_data = _split_subtree_into_feature_groups(tree.childs[direction], 1, max_tree_depth)
         data = np.concatenate((data, sub_data))
         distance = np.concatenate((distance, sub_distance))
         agent_data = np.concatenate((agent_data, sub_agent_data))
+        agent_time_data = np.concatenate((agent_time_data, sub_agent_time_data))
 
-    return data, distance, agent_data
+    return data, distance, agent_data, agent_time_data
 
 
-def normalize_observation(observation: TreeObsForRailEnv.Node, tree_depth: int, observation_radius=0):
+def normalize_observation(observation: TreeObsForRailEnvExtended.Node, tree_depth: int, observation_radius=0):
     """
     This function normalizes the observation used by the RL algorithm
     """
-    data, distance, agent_data = split_tree_into_feature_groups(observation, tree_depth)
+    data, distance, agent_data, agent_time_data = split_tree_into_feature_groups(observation, tree_depth)
 
     data = norm_obs_clip(data, fixed_radius=observation_radius)
     distance = norm_obs_clip(distance, normalize_to_range=True)
     agent_data = np.clip(agent_data, -1, 1)
-    normalized_obs = np.concatenate((np.concatenate((data, distance)), agent_data))
+    agent_time_data = np.clip(agent_time_data / tree_depth, 0, 1)
+
+    normalized_obs = np.concatenate((np.concatenate((np.concatenate((data, distance)), agent_data)), agent_time_data))
     return normalized_obs

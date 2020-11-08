@@ -152,8 +152,8 @@ def train_policy(seed, n_episodes, timed, filename):
 if __name__ == "__main__":
 
     seed = 42
-    timed = False
+    timed = True
     n_episodes = 500
-    filename = "./rl-weights.pth"
+    filename = "./rl-weights-withtimed.pth"
 
     train_policy(seed, n_episodes, timed, filename)

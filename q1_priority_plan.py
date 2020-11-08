@@ -1,10 +1,11 @@
 import numpy as np
 import itertools
+import math
 import heapq
 import random
 from dataclasses import dataclass, field
 from typing import Any
-
+from copy import deepcopy
 from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_env import RailEnv, RailEnvActions
 from flatland.core.grid.grid4_utils import get_new_position
@@ -189,7 +190,6 @@ def all_pairs_shortest_paths(num_states, transition):
             for j in range(0, num_states):
                 if dist[i][j] > dist[i][k] + dist[k][j]:
                     dist[i][j] = dist[i][k] + dist[k][j]
-
     return dist
 
 
@@ -268,9 +268,8 @@ class SearchNode:
         return self.agents_at_goal().all()
 
     def get_evaluation(self):
-        # Ca
-        print("Penalty apply: ",self.get_timing_penalty(self.time_step, self.searchenv.env._max_episode_steps))
-        return (self.neg_g + self.get_timing_penalty(self.time_step, self.searchenv.env._max_episode_steps)) + self.get_heuristic()
+        #print("Penalty apply: ",self.get_timing_penalty(self.time_step, self.searchenv.env._max_episode_steps))
+        return (-self.neg_g + self.get_timing_penalty(self.time_step, self.searchenv.env._max_episode_steps)) + self.get_heuristic()
 
     def get_heuristic(self):
         # Compute the shortest paths from current state (position of all agent to their goal)
@@ -279,11 +278,12 @@ class SearchNode:
         shortest_to_goal_state = np.min(shortest_to_goal_states, 1)
         # heuristic value is the longest distance that need for all agent to reach the goal position
         h = np.int32(np.max(shortest_to_goal_state))
+        # print("Distance to Goal",h)
         total_forward_penalty = 0
-        if self.searchstate.actives != RailAgentStatus.READY_TO_DEPART:
-            for i in range(1,h+1):
+        if self.searchstate.actives == RailAgentStatus.ACTIVE:
+            for i in range(1,h):
                 total_forward_penalty += self.get_timing_penalty(self.time_step + i, self.searchenv.env._max_episode_steps)
-        return h + (total_forward_penalty)
+        return h + total_forward_penalty
 
     def get_occupied_tiles(self):
         """
@@ -307,10 +307,10 @@ class SearchNode:
             # Compute the number of steps the agent is outside bounds.
             steps_outside = 0
 
-            if elapsed_steps <= self.searchenv.release:
-                steps_outside = 1 + self.searchenv.release - elapsed_steps
-            if elapsed_steps >= self.searchenv.deadline:
-                steps_outside = 1 + elapsed_steps - self.searchenv.deadline
+            if elapsed_steps < self.searchenv.release:
+                steps_outside = self.searchenv.release - elapsed_steps
+            if elapsed_steps > self.searchenv.deadline:
+                steps_outside = elapsed_steps - self.searchenv.deadline
 
             # Compute the normalized penalty.
             penalty = ((steps_outside * steps_outside) / (max_episode_steps * max_episode_steps / 4))
@@ -329,7 +329,7 @@ class SearchNode:
 
         # Mask the rail transition actions for idle agents.
         if self.searchstate.actives == 0:
-            agent_actions = [0, 0, 1, 0, 1]     # DO_NOTHING, or MOVE_FORWARD.
+            agent_actions = [0, 0, 1, 0, 1]     # STOP_MOVING, or MOVE_FORWARD.
 
         # Mask the rail transition actions for done agents.
         if self.agents_at_goal() == True:
@@ -360,7 +360,7 @@ class SearchNode:
         occupied_table = occupied_map.copy()
 
         if len(occupied_table)-1 < self.time_step:
-            for i in range (self.time_step - len(occupied_table) +1):
+            for i in range (self.time_step - len(occupied_table) + 1):
                 occupied_table.append(np.zeros(self.searchenv.conv.num_tiles))
 
         # Move agents in increasing order of their IDs.
@@ -372,7 +372,7 @@ class SearchNode:
             current_tile = self.searchenv.conv.state_to_tile(current_state)
 
             # Agent was inactive, wants to begin moving.
-            if new_actives == 0 and action == 2:
+            if new_actives[i] == 0 and action == 2:
                 if occupied_table[self.time_step][current_tile] == 1:
                     # Attempting to enter blocked tile, expand fails.
                     return None
@@ -404,11 +404,14 @@ class SearchNode:
                     if next_tile == self.searchenv.goal_tile[i]:
                         # occupied[next_tile] = 0
                         new_actives[i] = 0
-        print("Action: ",action)
+        # print("Action: ",action)
         # If the agent is not active and will remain inactive at next time step --> not incur step cost
         next_neg = self.neg_g
-        if self.searchstate.actives == RailAgentStatus.ACTIVE:
-            next_neg = self.neg_g -1
+        if new_actives[0] == RailAgentStatus.ACTIVE:
+            next_neg = self.neg_g - 1
+        elif new_actives[i] == RailAgentStatus.READY_TO_DEPART:
+            if self.time_step >= self.searchenv.release:
+                next_neg = self.neg_g - 1
         return SearchNode(next_neg, self, action, self.searchenv, SearchState(new_states, new_actives),self.time_step + 1)
 
     def get_path(self):
@@ -508,10 +511,10 @@ def a_star_search(root, occupied):
             return (current.get_path(),current.get_state_path(),current.get_time_step(), expansions, generations)
 
         # Otherwise, we will generate all child nodes.
-        print("Valid Action: ", current.get_all_valid_actions())
+        # print("Valid Action: ", current.get_all_valid_actions())
         print("Current time step " +  str(current.time_step) +" Action: " + str(current.action))
         for action in current.get_all_valid_actions():
-            #print("Action: ",action)
+            print("Action: ",action)
             # Create successor node from action.
             nextnode = current.expand_node(action,occupied)
 
@@ -523,19 +526,25 @@ def a_star_search(root, occupied):
                 print("Action Approved: " + str(action) +" F value of Next node: ", nextnode.f)
                 closed.add(nextnode)
                 heapq.heappush(openlist, nextnode)
-            else:
-                if action == 4:
-                    if closed.__contains__(nextnode):
-                        print("current node time step ",current.time_step)
-                        print(closed)
-                        print(nextnode)
-                    elif nextnode is None:
-                        print ("Next Node is None")
 
     return (None,None, expansions, generations)
 
 
-def compute_map(current_agent_id,agent_order,number_of_timestep,schedules, conv :StateConverter):
+def compute_map(current_agent_id,agent_order,number_of_timestep,state_schedules, conv :StateConverter):
+    """
+    Compute the occupancy map for each agent
+
+    Args:
+        current_agent_id: The agent need to compute the occupancy map
+        agent_order: contain a list of agent id that already computed schedule
+        number_of_timestep: number of time step of other agent id
+        state_schedules: schedule of other agents (contain the states of other agents)
+        conv:
+
+    Returns:
+        occupancy_map: occupancy map of current agent id
+
+    """
     #Find the agent has the highest number of time steps
     highest_timestep = 0
     # Find the highest time step
@@ -549,37 +558,37 @@ def compute_map(current_agent_id,agent_order,number_of_timestep,schedules, conv 
         # Initialize the occupancy for current time step
         current_occupancy_map = np.zeros(conv.num_tiles)
         # We loop through schedule of each agent at current time step
-        for i in range(len(schedules)):
+        for i in range(len(state_schedules)):
             # Get the agent id of current schedule
             agent_of_schedule = agent_order[i]
-            if time_step < len(schedules[i]):
+            if time_step < len(state_schedules[i]):
                 # The first case when the agent of current schedule is executed after the current agent
                 if agent_of_schedule > current_agent_id:
                     # Get the current state
-                    current_state = schedules[i][time_step]
+                    current_state = state_schedules[i][time_step]
                     # Convert the current state to tile index
                     current_tile = conv.state_to_tile(current_state)
                     # Occupied the current tile in the occupancy map
                     current_occupancy_map[current_tile] = 1
-                    if time_step + 1 < len(schedules[i]):
+                    if time_step + 1 < len(state_schedules[i]):
                         # Get the next state
-                        next_state = schedules[i][time_step + 1]
+                        next_state = state_schedules[i][time_step + 1]
                         # Convert next state to next tile will be occupied
                         next_tile_index = conv.state_to_tile(next_state)
                         # Occupied the next tile in the occupancy map
                         current_occupancy_map[next_tile_index] = 1
                 # The second case when the agent of current schedule is executed before the current agent
                 else:
-                    if time_step + 1 < len(schedules[i]):
+                    if time_step + 1 < len(state_schedules[i]):
                         # Get the next state
-                        next_state = schedules[i][time_step + 1]
+                        next_state = state_schedules[i][time_step + 1]
                         # Convert next state to next tile will be occupied
                         next_tile_index = conv.state_to_tile(next_state)
                         # Occupied the next tile in the occupancy map
                         current_occupancy_map[next_tile_index] = 1
-                    if time_step + 2 < len(schedules[i]):
+                    if time_step + 2 < len(state_schedules[i]):
                         # Get the next 2 state
-                        next_2state = schedules[i][time_step+2]
+                        next_2state = state_schedules[i][time_step+2]
                         # Convert the current state to tile index
                         next_2tile = conv.state_to_tile(next_2state)
                         # Occupied the current tile in the occupancy map
@@ -597,12 +606,49 @@ def compute_map(current_agent_id,agent_order,number_of_timestep,schedules, conv 
     #return a_star_search(SearchEnv(env).get_root_node())
 
 
-def search_a(env:RailEnv):
+def prioritized_planning(env:RailEnv):
+    """Implementation of prioritized planning with occupancy map"""
     schedules = []
     occupancy_map=[[] for i in range(len(env.agents))]
 
-    position=[]
-    tile=[]
+    n_timesteps = np.array([])
+    state_schedule =[]
+    conv = StateConverter(env)
+    # Compute the transition and valid action table
+    model = convert_to_transition(env, conv)
+
+    # Calculate the shortest dist from one state to another state
+    shortest = all_pairs_shortest_paths(conv.num_states, model[0])
+    print("Done")
+    l = list(range(len(env.agents)))
+    # Create a random order
+    random_order_agent = random.sample(l, len(l))
+    print("Agent order: ",random_order_agent)
+
+
+    for i in random_order_agent:
+        # Compute occupancy map
+        occupancy_map[i] = compute_map(i, random_order_agent, n_timesteps, state_schedule, conv)
+
+        # Compute schedule,state for each agent based on the occupancy map
+        each_schedule = a_star_search(SearchEnv(env,conv,model,shortest,i).get_root_node(),occupancy_map[i])
+        schedules.append(each_schedule[0])
+        state_schedule.append(each_schedule[1])
+        n_timesteps = np.append(n_timesteps, [len(each_schedule[1])])
+
+
+    # Combine separate actions into a list
+    actions = combine(schedules,random_order_agent,int(np.max(n_timesteps)))
+
+    return actions
+
+
+def search_a_for_genetic(env:RailEnv,randomized):
+    """
+    prioritized planning with occupancy map used for genetic algorithm in q3
+    """
+    schedules = []
+    occupancy_map=[[] for i in range(len(env.agents))]
 
     n_timesteps = np.array([])
     state_schedule =[]
@@ -611,10 +657,8 @@ def search_a(env:RailEnv):
     model = convert_to_transition(env, conv)
     # Calculate the shortest dist from one state to another state
     shortest = all_pairs_shortest_paths(conv.num_states, model[0])
-    l = list(range(len(env.agents)))
-    random_order_agent = random.sample(l, len(l))
+    random_order_agent = randomized
     print(random_order_agent)
-
 
     for i in random_order_agent:
         # Compute occupancy map
@@ -622,26 +666,22 @@ def search_a(env:RailEnv):
 
         # Compute schedule for each agent based on the occupancy map
         each_schedule = a_star_search(SearchEnv(env,conv,model,shortest,i).get_root_node(),occupancy_map[i])
-        print(each_schedule)
+        #print(each_schedule)
         schedules.append(each_schedule[0])
         state_schedule.append(each_schedule[1])
         n_timesteps = np.append(n_timesteps, [len(each_schedule[1])])
 
-        temp_position = []
-        temp_tile = []
-        for state in each_schedule[1]:
-            temp_position.append(conv.state_to_position(state))
-            temp_tile.append((conv.state_to_tile(state)))
-        position.append(temp_position)
-        tile.append(temp_tile)
-
     # Combine separate actions into a list
     actions = combine(schedules,random_order_agent,int(np.max(n_timesteps)))
 
-    return (schedules, occupancy_map,actions)
+    return actions
 
 
 def combine(schedules,agent_order_list,highest_timestep):
+    """
+    Combine list of actions from agents to one list
+
+    """
     action=[]
     for timestep in range(highest_timestep-1):
         current_action = dict()
@@ -669,3 +709,148 @@ def search(env: RailEnv):
         schedule.append(_actions)
 
     return schedule
+
+
+def genetic_algorithm(env: RailEnv):
+    """ Improvement of prioritized planning"""
+    # Determine number of agent and number of combinations of randomized order
+    n_agents = len(env.agents)
+    n_combination = math.factorial(n_agents)
+    agent_ids= list(range(n_agents))
+    # Compute number of iteration for genetic algo
+    # Run ten iterations
+    n_iterations = 10
+
+    # create an initial population. The population contains three combinations of randomized order
+    population = []
+    final_reward = dict()
+    for i in range(3):
+        randomized_order = random.sample(agent_ids, len(agent_ids))
+        if not population.__contains__(randomized_order):
+            population.append(randomized_order)
+
+    highest_reward_of_each_iteration=[]
+    action_plan = dict()
+    # Run the genetic algorithm in n number of iteration
+    for iteration in range(n_iterations):
+        # Pass each randomized order to the modified a_star
+        i=0
+        reward = dict()
+        print("*******************************************************New Population***********************************")
+        print("Iteration ",iteration)
+        # For each planning order in population we run it to get the cumulative reward
+        for randomized_order in population:
+            schedules = search_a_for_genetic(env,randomized_order)
+            action_plan[i] = schedules
+            test_env = deepcopy(env)
+            success = False
+            sumreward = 0
+            #  apply to the copied environment to calculate the sumreward for fitness score
+            for action in schedules:
+                _, _reward_dict, _done, _ = test_env.step(action)
+                success = all(_done.values())
+                sumreward = sumreward + sum(_reward_dict.values())
+            reward[i] = sumreward
+            #print("Total Time Step: ",test_env._elapsed_steps)
+            #print("Randomize order: ", randomized_order)
+            #print("Sum reward: ",sumreward)
+            i += 1
+        final_reward = reward.copy()
+        highest_reward_of_each_iteration.append(final_reward)
+        # find the randomized order give us the min reward
+        key_min = min(reward.keys(), key=(lambda k: reward[k]))
+        min_randomized_order = population[key_min]
+        del reward[key_min]
+
+        # Crossover
+        # Select the parent
+        # Find two combinations of randomized order that give us highest reward
+        max_key_a = max(reward.keys(), key=(lambda k: reward[k]))
+        del reward[max_key_a]
+        randomized_order_a = population[max_key_a]
+
+        max_key_b = max(reward.keys(), key=(lambda k: reward[k]))
+        del reward[max_key_b]
+        randomized_order_b = population[max_key_b]
+
+        # Crossover
+        # Generate a random crossover
+        cross_point = random.randrange(1,n_agents-1)
+        first_part_order_a = randomized_order_a[:cross_point]
+        second_part_order_a = randomized_order_a[cross_point:]
+
+        first_part_order_b = randomized_order_b[:cross_point]
+        second_part_order_b = randomized_order_b[cross_point:]
+
+        # Create two children based on the genes of parent
+        child_a = first_part_order_a + second_part_order_b
+        child_b = first_part_order_b + second_part_order_a
+
+        # Mutation
+        mutation(child_a)
+        mutation(child_b)
+
+        # remove the two combinations in the population that have lower reward
+        population.remove(min_randomized_order)
+        population.remove(randomized_order_b)
+
+        # add two new children to the population
+
+        population.append(child_a)
+        population.append(child_b)
+
+
+    # Find the best schedule
+    max_key_reward = max(final_reward.keys(), key=(lambda k: final_reward[k]))
+    best_order = population[max_key_reward]
+
+    print("--------------------------------Result-------------------------------------")
+    print("Best Order: ", best_order)
+    print("Reward: ",highest_reward_of_each_iteration)
+    return best_order,action_plan[max_key_reward]
+
+def mutation(child_order):
+    """
+    Apply mutation to other
+
+    """
+    duplicate_list = [[] for i in range(len(child_order))]
+    # checking invalid gene
+    for i in range(len(child_order)):
+        duplicate_list[child_order[i]].append(i)
+
+    index_of_invalid = []
+    invalid_order = []
+    for i in range(len(duplicate_list)):
+        if len(duplicate_list[i]) != 1:
+            invalid_order.append(i)
+            if len(duplicate_list[i]) > 1:
+                for index in duplicate_list[i]:
+                    index_of_invalid.append(index)
+    #if there is no invalid order
+    if invalid_order == 0:
+        # generate a random number
+        rand_number = random.randint(1,100)
+        # there is a 10% chance that mutation happen
+        if rand_number < 10:
+            # pick two agents randomly
+            first_random_index = random.randint(0,len(child_order))
+            second_random_index = random.randint (0,len(child_order))
+            while first_random_index == second_random_index:
+                second_random_index = random.randint(0, len(child_order))
+
+            #swap the agents in the planning
+            temp = child_order[first_random_index]
+            child_order[first_random_index] = child_order[second_random_index]
+            child_order[second_random_index] = temp
+    else:
+        # if there are invalid, we have to apply mutation
+        for index in index_of_invalid:
+            random_order = random.choice(invalid_order)
+            child_order[index] = random_order
+            invalid_order.remove(random_order)
+
+
+
+
+

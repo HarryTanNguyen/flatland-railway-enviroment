@@ -109,9 +109,10 @@ def evaluate(seed=37429879, timed=False, filename="./rl-weights.pth", debug=Fals
 
 def main():
 
-    seed = 37429879
-    timed = False
-    filename = "./rl-weights.pth"
+    #seed = 37429879
+    seed = 32617879
+    timed = True
+    filename = "./rl-weights-withtimed.pth"
     _debug = False
     _refresh = 0.05
 
